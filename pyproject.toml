@@ -7,10 +7,10 @@ requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.10.8",
     "notebook>=7.5.5",
-    "numpy>=2.4.3",
+    "numpy>=2.4.4",
     "scikit-learn>=1.8.0",
-    "torch>=2.10.0",
-    "torchvision>=0.25.0",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
 ]
 
 [[tool.uv.index]]
