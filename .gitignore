@@ -9,3 +9,15 @@ uv.lock
 
 # Virtual environments
 .venv
+
+# Downloaded datasets
+data/
+CIFAR10/
+data_minst/
+*.png
+
+# Training checkpoints and logs
+checkpoints/
+logs/
+*.log
+*.pth
