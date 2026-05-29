@@ -1,0 +1,3 @@
+[submodule "Week_13/data/AN4"]
+	path = Week_13/data/AN4
+	url = https://github.com/cmusphinx/an4.git
