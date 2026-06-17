@@ -20,17 +20,14 @@ lab3_2026/
 ├── lab3_CTC_ASR_blank.ipynb        ← 主要文件: 你做的就是这个 (6 个 TODO)
 ├── utils.py                        数据加载 / 增强 / CTC 解码 / WER&CER 评测
 ├── data/AN4/                       ⚠️ 数据集不在 zip 里, 自己放到这里
-└── model/                          训完的 checkpoint 会存到这里 (notebook 会自动建)
+└── checkpoints/                          训完的 checkpoint 会存到这里 (notebook 会自动建)
 ```
 
-**数据准备**: 把 AN4 数据集 (~60 MB) 放到 `lab3_2026/data/AN4/`, 目录里应该有 `etc/` 和 `wav/` 两个子目录, 然后再开始跑 notebook。
+**数据准备**: 在项目根目录(<u>不是lab4!</u>)使用 `git submodule update --init --recursive`, 然后再开始跑 notebook。
 
 ## 环境
 
-notebook 顶部有一个 `!pip install -q jiwer torchcodec==0.10.0` 的安装 cell, 第一次跑请先执行它。
-其他依赖 (`torch`, `torchaudio`, `matplotlib`) 算力平台一般都自带。
-
-GPU 推荐 T4 / P100 / L20 / RTX 30/40 系列; CPU 也能跑但会非常慢。
+在项目根目录下执行过`uv sync`即可。
 
 ## 训练时长 (实测, 仅供参考)
 

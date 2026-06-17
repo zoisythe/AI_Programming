@@ -5,29 +5,30 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "matplotlib>=3.10.9",
+    "matplotlib>=3.11.0",
     "notebook>=7.5.7",
     "numpy>=2.4.6",
-    "scikit-learn>=1.8.0",
+    "scikit-learn>=1.9.0",
     "torch>=2.12.0",
     "torchvision>=0.27.0",
-    "torchaudio>=2.11.0",
     "torchcodec>=0.14.0",
     "jiwer>=4.0.0",
 ]
 
+# For nvidia GPUs with Graphics Driver 595.48 or later, CUDA 13.2 support is required.
+# If you can't use cuda 13.2, please ask AI for help to install the compatible versions of torch, torchvision and torchcodec.
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.uv.sources]
 torch = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchvision = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-torchaudio = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+torchcodec = [
+  { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]

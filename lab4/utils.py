@@ -9,9 +9,9 @@ import re
 from typing import List, Tuple, Sequence
 
 import torch
-import torchaudio
-import torchaudio.functional as AF
-from torchaudio.transforms import FrequencyMasking, TimeMasking
+import torch.nn as nn
+import torch.nn.functional as F
+from torchcodec.decoders._audio_decoder import AudioDecoder
 import jiwer
 
 
@@ -59,7 +59,10 @@ def load_an4_split(data_dir: str, split: str) -> List[Tuple[str, torch.Tensor, i
     for fid in fileids:
         # fid 例如 'an4_clstk/fash/an251-fash-b'
         wav_path = os.path.join(data_dir, "wav", fid + ".wav")
-        waveform, sr = torchaudio.load(wav_path)
+        samples = AudioDecoder(wav_path).get_all_samples()
+        waveform, sr = samples.data, int(samples.sample_rate)
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
         fid_short = os.path.basename(fid)
         transcript = transcripts.get(fid_short)
         if transcript is None:
@@ -69,7 +72,94 @@ def load_an4_split(data_dir: str, split: str) -> List[Tuple[str, torch.Tensor, i
 
 
 # ============================================================
-# 2. 字符 <-> 索引
+# 2. Mel 频谱
+# ============================================================
+
+def _hz_to_mel(freq: torch.Tensor) -> torch.Tensor:
+    return 2595.0 * torch.log10(1.0 + freq / 700.0)
+
+
+def _mel_to_hz(mel: torch.Tensor) -> torch.Tensor:
+    return 700.0 * (torch.pow(10.0, mel / 2595.0) - 1.0)
+
+
+def _build_mel_filterbank(
+    sample_rate: int,
+    n_fft: int,
+    n_mels: int,
+    f_min: float = 0.0,
+    f_max: float | None = None,
+) -> torch.Tensor:
+    """Build triangular HTK mel filters with ``(n_freqs, n_mels)`` orientation."""
+    f_max = float(sample_rate / 2 if f_max is None else f_max)
+    n_freqs = n_fft // 2 + 1
+    all_freqs = torch.linspace(0.0, sample_rate / 2, n_freqs)
+
+    mel_min = _hz_to_mel(torch.tensor(float(f_min)))
+    mel_max = _hz_to_mel(torch.tensor(float(f_max)))
+    mel_pts = torch.linspace(mel_min, mel_max, n_mels + 2)
+    f_pts = _mel_to_hz(mel_pts)
+
+    f_diff = f_pts[1:] - f_pts[:-1]
+    slopes = f_pts.unsqueeze(0) - all_freqs.unsqueeze(1)
+    down_slopes = -slopes[:, :-2] / f_diff[:-1]
+    up_slopes = slopes[:, 2:] / f_diff[1:]
+    return torch.clamp(torch.minimum(down_slopes, up_slopes), min=0.0)
+
+
+class TorchMelSpectrogram(nn.Module):
+    """Small torch-only MelSpectrogram replacement."""
+
+    def __init__(
+        self,
+        sample_rate: int,
+        n_mels: int,
+        n_fft: int,
+        hop_length: int,
+        win_length: int | None = None,
+        f_min: float = 0.0,
+        f_max: float | None = None,
+        power: float = 2.0,
+        center: bool = True,
+        pad_mode: str = "reflect",
+    ):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = n_fft if win_length is None else win_length
+        self.power = power
+        self.center = center
+        self.pad_mode = pad_mode
+
+        self.register_buffer("window", torch.hann_window(self.win_length), persistent=False)
+        self.register_buffer(
+            "mel_fb",
+            _build_mel_filterbank(sample_rate, n_fft, n_mels, f_min=f_min, f_max=f_max),
+            persistent=False,
+        )
+
+    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+        window = self.get_buffer("window").to(device=waveform.device, dtype=waveform.dtype)
+        mel_fb = self.get_buffer("mel_fb").to(device=waveform.device, dtype=waveform.dtype)
+
+        spec = torch.stft(
+            waveform,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=window,
+            center=self.center,
+            pad_mode=self.pad_mode,
+            return_complex=True,
+        )
+        power_spec = spec.abs().pow(self.power)       # (..., n_freqs, T)
+        return torch.matmul(mel_fb.transpose(0, 1), power_spec)
+
+
+# ============================================================
+# 3. 字符 <-> 索引
 # ============================================================
 
 def text_to_indices(text: str, vocab: Sequence[str]) -> List[int]:
@@ -84,7 +174,7 @@ def indices_to_text(indices: Sequence[int], vocab: Sequence[str]) -> str:
 
 
 # ============================================================
-# 3. CTC 贪心解码
+# 4. CTC 贪心解码
 # ============================================================
 
 def ctc_greedy_decode(indices_2d, blank_index: int = 0) -> List[List[int]]:
@@ -108,7 +198,7 @@ def ctc_greedy_decode(indices_2d, blank_index: int = 0) -> List[List[int]]:
 
 
 # ============================================================
-# 4. 评测: 跨 batch 累积再求商
+# 5. 评测: 跨 batch 累积再求商
 # ============================================================
 
 class WerCerMeter:
@@ -139,8 +229,25 @@ class WerCerMeter:
 
 
 # ============================================================
-# 5. 增强: SpecAugment & Speed Perturbation
+# 6. 增强: SpecAugment & Speed Perturbation
 # ============================================================
+
+def _random_mask(x: torch.Tensor, dim: int, max_width: int) -> torch.Tensor:
+    size = x.size(dim)
+    width_limit = min(max_width, size)
+    if width_limit <= 0:
+        return x
+
+    width = int(torch.randint(0, width_limit + 1, (), device=x.device).item())
+    if width == 0:
+        return x
+
+    start = int(torch.randint(0, size - width + 1, (), device=x.device).item())
+    y = x.clone()
+    index = [slice(None)] * y.dim()
+    index[dim] = slice(start, start + width)
+    y[tuple(index)] = 0
+    return y
 
 class SpecAugment:
     """简化版 SpecAugment: 频率遮挡 + 时间遮挡 (各做一次)。
@@ -149,13 +256,23 @@ class SpecAugment:
     只在训练阶段调用, 评测阶段不要用。
     """
     def __init__(self, freq_mask_param: int = 15, time_mask_param: int = 35):
-        self.freq_mask = FrequencyMasking(freq_mask_param)
-        self.time_mask = TimeMasking(time_mask_param)
+        self.freq_mask_param = freq_mask_param
+        self.time_mask_param = time_mask_param
 
     def __call__(self, mel_TxF: torch.Tensor) -> torch.Tensor:
-        x = self.freq_mask(mel_TxF.transpose(0, 1))   # (F, T)
-        x = self.time_mask(x)
-        return x.transpose(0, 1)                       # (T, F)
+        x = _random_mask(mel_TxF, dim=1, max_width=self.freq_mask_param)
+        return _random_mask(x, dim=0, max_width=self.time_mask_param)
+
+
+def _linear_resample(waveform: torch.Tensor, orig_freq: int, new_freq: int) -> torch.Tensor:
+    if orig_freq == new_freq:
+        return waveform
+
+    old_length = waveform.size(-1)
+    new_length = max(1, int(round(old_length * float(new_freq) / float(orig_freq))))
+    flat = waveform.reshape(-1, 1, old_length)
+    resampled = F.interpolate(flat, size=new_length, mode="linear", align_corners=False)
+    return resampled.reshape(*waveform.shape[:-1], new_length)
 
 
 def speed_perturb(waveform: torch.Tensor, sr: int, speed: float) -> torch.Tensor:
@@ -166,7 +283,7 @@ def speed_perturb(waveform: torch.Tensor, sr: int, speed: float) -> torch.Tensor
     if speed == 1.0:
         return waveform
     new_sr = int(sr * speed)
-    return AF.resample(waveform, sr, new_sr)
+    return _linear_resample(waveform, sr, new_sr)
 
 
 def expand_with_speed_perturb(records, speeds=(0.9, 1.0, 1.1)):
